@@ -464,6 +464,27 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
         return normalized
 
+    def _parse_model_name_to_params(self, model_name: str) -> tuple[str, dict[str, Any]]:
+        params: dict[str, Any] = {}
+        extra: dict[str, Any] = {}
+        model_parts: list[str] = []
+
+        REASONING_EFFORTS = {"low", "high"}
+
+        for part in model_name.split('-'):
+            if part in REASONING_EFFORTS:
+                params["reasoning_effort"] = part
+            elif part == "thinking":
+                extra["extra_body"] = {"thinking": {"type": "enabled"}}
+            else:
+                model_parts.append(part)
+
+        cleaned_model_name = '-'.join(model_parts) if model_parts else model_name
+        if cleaned_model_name == "kimi-k2.5":
+            extra.setdefault("extra_body", {"thinking": {"type": "disabled"}})
+        params["extra_body"] = extra
+        return cleaned_model_name, params
+
     def _call_gpt(
         self, messages: List[Dict[str, str]], eval_args: dict
     ) -> tuple[str, str]:
@@ -479,10 +500,12 @@ class LLMJudgeValidationModule(BaseValidationModule):
         """
         # Check if a specific model is requested
         if "selected_model" in eval_args:
-            selected_model = eval_args["selected_model"]
+            eval_model = eval_args["selected_model"]
         else:
-            selected_model = self._select_eval_model(eval_args)
+            eval_model = self._select_eval_model(eval_args)
         temperature = eval_args.get("temperature", 0.1)  # Default eval temperature
+
+        selected_model, model_params = self._parse_model_name_to_params(eval_model)
 
         # Patch: kimi-k2.5 requires temperature=1
         if selected_model == "kimi-k2.5":
@@ -494,6 +517,7 @@ class LLMJudgeValidationModule(BaseValidationModule):
             "temperature": temperature,
             "seed": random.randint(0, 10000),
         }
+        params.update(model_params)
 
         def log_retry(retry_state):
             logger.warning(
