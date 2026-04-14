@@ -2,15 +2,23 @@
 Local-only validation entrypoint.
 Runs model inference + LLM evaluation without any Flock API calls.
 
-Usage:
+Usage (inference only):
     uv run python local_validate.py \
         --model-path /mnt/smh/swift_converted \
         --validation-file /opt/flock/task21/task21_eval_final.jsonl \
-        --base-model-path /mnt/smh/huggingface_cache/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd0a36b00ddf55e13ccb7b8cd0a \
+        --base-model-path /mnt/smh/huggingface_cache/hub/models--Qwen--Qwen3.5-4B/snapshots/... \
+        --is-lora
+
+Usage (inference + LLM evaluation):
+    export OPENAI_API_KEY="your-key"
+    export OPENAI_BASE_URL="https://api.flock.io/v1"
+
+    uv run python local_validate.py \
+        --model-path /mnt/smh/swift_converted \
+        --validation-file /opt/flock/task21/task21_eval_final.jsonl \
+        --base-model-path /mnt/smh/huggingface_cache/hub/models--Qwen--Qwen3.5-4B/snapshots/... \
         --is-lora \
         --eval-with-llm
-
-Requires OPENAI_API_KEY and OPENAI_BASE_URL environment variables when --eval-with-llm is used.
 """
 
 import sys
@@ -59,16 +67,31 @@ from validator.modules.llm_judge import LLMJudgeValidationModule, LLMJudgeConfig
 )
 @click.option(
     "--context-length",
-    default=2048,
+    default=8192,
     type=int,
     show_default=True,
     help="Maximum context length for generation",
 )
 @click.option(
     "--max-params",
-    default=None,
+    default=6_000_000_000,
     type=int,
-    help="Maximum allowed model parameters (skip check if not set)",
+    show_default=True,
+    help="Maximum allowed model parameters",
+)
+@click.option(
+    "--eval-model-list",
+    default="kimi-k2.5,gemini-3.1-pro-preview-low,deepseek-v3.2",
+    type=str,
+    show_default=True,
+    help="Comma-separated list of eval models (used with --eval-with-llm)",
+)
+@click.option(
+    "--prompt-id",
+    default=3,
+    type=int,
+    show_default=True,
+    help="Prompt template ID for evaluation",
 )
 @click.option(
     "--gen-batch-size",
@@ -92,7 +115,9 @@ def main(
     eval_with_llm: bool,
     base_model_name: str | None,
     context_length: int,
-    max_params: int | None,
+    max_params: int,
+    eval_model_list: str,
+    prompt_id: int,
     gen_batch_size: int,
     eval_batch_size: int,
 ):
@@ -127,21 +152,20 @@ def main(
     logger.info("Initializing LLM Judge module...")
     module = LLMJudgeValidationModule(config=config)
 
-    # Build eval_args
+    # Build eval_args matching Flock task format
     eval_args = {
-        "eval_require": 3,
+        "eval_model_list": eval_model_list.split(","),
+        "eval_require": 3 if eval_with_llm else 0,
         "gen_require": 1,
+        "prompt_id": prompt_id,
     }
-    if not eval_with_llm:
-        # When not using LLM eval, set eval_require to 0 to skip evaluation stage
-        eval_args["eval_require"] = 0
 
     # Construct input data — validation_set_url and hg_repo_id are unused in local mode
     input_data = LLMJudgeInputData(
         hg_repo_id="local",
         revision="local",
         context_length=context_length,
-        max_params=max_params or 0,
+        max_params=max_params,
         validation_set_url="local",
         base_model=base_model_name,
         eval_args=eval_args,
