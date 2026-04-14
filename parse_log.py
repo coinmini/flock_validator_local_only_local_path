@@ -66,12 +66,20 @@ def parse_log(log_path: str):
                     current_gen_idx = None
                     current_gen_lines = []
 
-        # Evaluation entry
+        # Evaluation entry (may span multiple lines due to reasoning with newlines)
         eval_match = eval_pattern.search(line)
         if eval_match:
             conv_idx = int(eval_match.group(1))
-            evaluations[conv_idx].append(line)
+            eval_line = line
             i += 1
+            # Collect continuation lines until next log entry
+            while i < len(lines):
+                next_line = lines[i].rstrip('\n')
+                if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+', next_line):
+                    break
+                eval_line += ' ' + next_line.strip() if next_line.strip() else ''
+                i += 1
+            evaluations[conv_idx].append(eval_line)
             continue
 
         # Summary entry
