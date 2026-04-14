@@ -938,6 +938,13 @@ class LLMJudgeValidationModule(BaseValidationModule):
             assistant_response,
         )
 
+        # Log reference and assistant response once per conversation
+        logger.info(
+            f"[Conv {conv_idx} Input] "
+            f"Reference: {reference or 'N/A'} | "
+            f"Assistant response: {assistant_response or 'N/A'}"
+        )
+
         conv_scores = []
         conv_confidences = []
         conv_reasoning = []

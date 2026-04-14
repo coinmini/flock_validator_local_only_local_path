@@ -16,6 +16,7 @@ from collections import defaultdict
 def parse_log(log_path: str):
     """Parse log file and extract generation and evaluation entries."""
     generations = {}  # conv_idx -> list of log lines
+    eval_inputs = {}  # conv_idx -> line (reference + assistant response)
     evaluations = defaultdict(list)  # conv_idx -> list of (timestamp, line)
     summaries = {}  # conv_idx -> line
     other_lines = []  # non-conv lines (header, stage info, etc.)
@@ -23,6 +24,7 @@ def parse_log(log_path: str):
 
     # Patterns
     gen_pattern = re.compile(r'\[Generation (\d+)/\d+\]')
+    eval_input_pattern = re.compile(r'\[Conv (\d+) Input\]')
     eval_pattern = re.compile(r'\[Conv (\d+)\] Model:')
     summary_pattern = re.compile(r'\[Conv (\d+) Summary\]')
     final_pattern = re.compile(r'(Raw weighted avg score|Overall normalized|Validation complete|=== .* Reasoning ===)')
@@ -66,6 +68,21 @@ def parse_log(log_path: str):
                     current_gen_idx = None
                     current_gen_lines = []
 
+        # Eval input entry (reference + assistant response, may span multiple lines)
+        eval_input_match = eval_input_pattern.search(line)
+        if eval_input_match:
+            conv_idx = int(eval_input_match.group(1))
+            input_line = line
+            i += 1
+            while i < len(lines):
+                next_line = lines[i].rstrip('\n')
+                if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+', next_line):
+                    break
+                input_line += ' ' + next_line.strip() if next_line.strip() else ''
+                i += 1
+            eval_inputs[conv_idx] = input_line
+            continue
+
         # Evaluation entry (may span multiple lines due to reasoning with newlines)
         eval_match = eval_pattern.search(line)
         if eval_match:
@@ -104,7 +121,7 @@ def parse_log(log_path: str):
     if current_gen_idx is not None:
         generations[current_gen_idx] = current_gen_lines
 
-    return generations, evaluations, summaries, other_lines, final_lines
+    return generations, eval_inputs, evaluations, summaries, other_lines, final_lines
 
 
 def print_section(title: str):
@@ -122,10 +139,11 @@ def print_section(title: str):
 def main(log_path: str, conv: int | None, summary_only: bool, no_generation: bool, no_header: bool):
     """Parse and reorder validation log by Conv index."""
 
-    generations, evaluations, summaries, other_lines, final_lines = parse_log(log_path)
+    generations, eval_inputs, evaluations, summaries, other_lines, final_lines = parse_log(log_path)
 
     total_convs = max(
         max(generations.keys(), default=-1),
+        max(eval_inputs.keys(), default=-1),
         max(evaluations.keys(), default=-1),
         max(summaries.keys(), default=-1),
     ) + 1
@@ -152,6 +170,12 @@ def main(log_path: str, conv: int | None, summary_only: bool, no_generation: boo
             print("--- Generation ---")
             for line in generations[idx]:
                 print(line)
+            print()
+
+        # Eval input (reference + assistant response)
+        if idx in eval_inputs:
+            print("--- Reference & Assistant Response ---")
+            print(eval_inputs[idx])
             print()
 
         # Evaluations
