@@ -24,7 +24,7 @@ def parse_log(log_path: str):
 
     # Patterns
     gen_pattern = re.compile(r'\[Generation (\d+)/\d+\]')
-    eval_input_pattern = re.compile(r'\[Conv (\d+) Input\]')
+    eval_input_pattern = re.compile(r'\[Conv (\d+) (?:Input|Reference)\]')
     eval_pattern = re.compile(r'\[Conv (\d+)\] Model:')
     summary_pattern = re.compile(r'\[Conv (\d+) Summary\]')
     final_pattern = re.compile(r'(Raw weighted avg score|Overall normalized|Validation complete|=== .* Reasoning ===)')
@@ -172,9 +172,9 @@ def main(log_path: str, conv: int | None, summary_only: bool, no_generation: boo
                 print(line)
             print()
 
-        # Eval input (reference + assistant response)
+        # Reference
         if idx in eval_inputs:
-            print("--- Reference & Assistant Response ---")
+            print("--- Reference ---")
             print(eval_inputs[idx])
             print()
 
