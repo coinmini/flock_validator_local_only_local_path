@@ -126,22 +126,37 @@ class LLMJudgeValidationModule(BaseValidationModule):
                 raise  # Re-raise the exception if it's not related to the missing file
         return True
 
+    def _get_compute_dtype(self):
+        """Determine best dtype: prefer BF16 for numerical stability, fallback to FP16."""
+        if torch.cuda.is_available():
+            if torch.cuda.is_bf16_supported():
+                logger.info("Using bfloat16 for better numerical stability")
+                return torch.bfloat16
+            else:
+                logger.info("Using float16 (bfloat16 not supported on this GPU)")
+                return torch.float16
+        else:
+            logger.info("Using float32 (CPU mode)")
+            return torch.float32
+
+    def _validate_param_count(self, max_params: int | None):
+        """Check that total model parameters do not exceed the limit."""
+        if max_params is None:
+            return
+        total = sum(p.numel() for p in self.hf_model.parameters())
+        if total > max_params:
+            logger.info(
+                f"Total model params: {total} exceeds the limit {max_params}, submitting validation result with a large loss"
+            )
+            raise InvalidModelParametersException(
+                f"Model parameters {total} exceed limit {max_params}"
+            )
+
     def _load_model(self, repo_id: str, revision: str = "main", max_params: int = None):
 
         is_lora = self._download_lora_config(repo_id, revision=revision)
 
-        # Determine best dtype: prefer BF16 for numerical stability, fallback to FP16
-        if torch.cuda.is_available():
-            if torch.cuda.is_bf16_supported():
-                compute_dtype = torch.bfloat16
-                logger.info("Using bfloat16 for better numerical stability")
-            else:
-                compute_dtype = torch.float16
-                logger.info("Using float16 (bfloat16 not supported on this GPU)")
-        else:
-            compute_dtype = torch.float32
-            logger.info("Using float32 (CPU mode)")
-
+        compute_dtype = self._get_compute_dtype()
         model_kwargs = dict(
             trust_remote_code=True,
             torch_dtype=compute_dtype,
@@ -192,14 +207,54 @@ class LLMJudgeValidationModule(BaseValidationModule):
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
             )
-        total = sum(p.numel() for p in self.hf_model.parameters())
-        if total > max_params:
-            logger.info(
-                f"Total model params: {total} exceeds the limit {max_params}, submitting validation result with a large loss"
+        self._validate_param_count(max_params)
+
+    def _load_local_model(self, local_path: str, max_params: int = None):
+        """Load a LoRA adapter model from a local directory."""
+        local_path = Path(local_path)
+        adapter_config_path = local_path / "adapter_config.json"
+        if not adapter_config_path.exists():
+            raise LLMJudgeException(
+                f"adapter_config.json not found in local model path: {local_path}"
             )
-            raise InvalidModelParametersException(
-                f"Model parameters {total} exceed limit {max_params}"
+
+        with open(adapter_config_path, "r") as f:
+            adapter_config = json.load(f)
+
+        base_model = adapter_config["base_model_name_or_path"]
+        if base_model not in SUPPORTED_BASE_MODELS:
+            logger.error(
+                f"LoRA's base model '{base_model}' is not in SUPPORTED_BASE_MODELS. "
+                f"Marking assignment as failed."
             )
+            raise LLMJudgeException(
+                f"Base model '{base_model}' is not supported"
+            )
+
+        logger.info(
+            f"Loading local LoRA adapter from '{local_path}', base model: '{base_model}'"
+        )
+
+        compute_dtype = self._get_compute_dtype()
+        model_kwargs = dict(
+            trust_remote_code=True,
+            torch_dtype=compute_dtype,
+            device_map="auto",
+        )
+
+        self.hf_tokenizer = AutoTokenizer.from_pretrained(
+            base_model, trust_remote_code=True, use_fast=True, padding_side="left"
+        )
+        base_hf_model = AutoModelForCausalLM.from_pretrained(
+            base_model, **model_kwargs
+        )
+        hf_model = PeftModel.from_pretrained(
+            base_hf_model,
+            str(local_path),
+            device_map="auto",
+        )
+        self.hf_model = hf_model.merge_and_unload()
+        self._validate_param_count(max_params)
 
     def _generate_response(
         self,
@@ -911,10 +966,15 @@ class LLMJudgeValidationModule(BaseValidationModule):
         }
 
     def validate(self, data: LLMJudgeInputData, **kwargs) -> LLMJudgeMetrics:
+        local_model_path = kwargs.get("local_model_path")
         eval_file = download_file(data.validation_set_url)
 
         try:
-            self._load_model(data.hg_repo_id, data.revision, data.max_params)
+            if local_model_path:
+                logger.info(f"Using local model from: {local_model_path}")
+                self._load_local_model(local_model_path, data.max_params)
+            else:
+                self._load_model(data.hg_repo_id, data.revision, data.max_params)
         except InvalidModelParametersException as e:
             # lowest possible reward for invalid model parameters
             logger.error(f"Invalid model parameters: {e}")

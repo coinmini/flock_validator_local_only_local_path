@@ -19,7 +19,8 @@ from validator.validation_runner import ValidationRunner
 @click.option('--time-sleep', envvar='TIME_SLEEP', default=60 * 3, type=int, show_default=True, help='Time to sleep between retries (seconds)')
 @click.option('--assignment-lookup-interval', envvar='ASSIGNMENT_LOOKUP_INTERVAL', default=60 * 3, type=int, show_default=True, help='Assignment lookup interval (seconds)')
 @click.option("--debug", is_flag=True)
-def main(module: str, task_ids: str, flock_api_key: str, hf_token: str, time_sleep: int, assignment_lookup_interval: int, debug: bool):
+@click.option('--local-model-path', envvar='LOCAL_MODEL_PATH', default=None, type=str, help='Local path to SFT fine-tuned model weights (LoRA adapter directory)')
+def main(module: str, task_ids: str, flock_api_key: str, hf_token: str, time_sleep: int, assignment_lookup_interval: int, debug: bool, local_model_path: str):
     """
     CLI entrypoint for running the validation process.
     Delegates core logic to ValidationRunner.
@@ -32,6 +33,7 @@ def main(module: str, task_ids: str, flock_api_key: str, hf_token: str, time_sle
         time_sleep=time_sleep,
         assignment_lookup_interval=assignment_lookup_interval,
         debug=debug,
+        local_model_path=local_model_path,
     )
     try:
         runner.run()

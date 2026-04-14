@@ -21,6 +21,7 @@ class ValidationRunner:
         time_sleep: int = 180,
         assignment_lookup_interval: int = 180,
         debug: bool = False,
+        local_model_path: str | None = None,
     ):
         """
         Initialize the ValidationRunner.
@@ -32,6 +33,7 @@ class ValidationRunner:
             time_sleep: Time to sleep between retries (seconds).
             assignment_lookup_interval: Assignment lookup interval (seconds).
             debug: Enable debug mode (currently unused).
+            local_model_path: Optional local path to SFT fine-tuned model weights.
         """
         self.module = module
         self.task_ids = task_ids
@@ -40,6 +42,7 @@ class ValidationRunner:
         self.time_sleep = time_sleep
         self.assignment_lookup_interval = assignment_lookup_interval
         self.debug = debug
+        self.local_model_path = local_model_path
         self.api = FedLedger(flock_api_key)
         self._setup_modules()
 
@@ -67,7 +70,7 @@ class ValidationRunner:
         module_obj = self.task_id_to_module[task_id]
         for attempt in range(3):
             try:
-                return module_obj.validate(input_data)
+                return module_obj.validate(input_data, local_model_path=self.local_model_path)
             except KeyboardInterrupt:
                 sys.exit(1)
             except RecoverableException as e:
