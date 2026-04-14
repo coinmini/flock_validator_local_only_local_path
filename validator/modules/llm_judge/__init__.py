@@ -416,17 +416,13 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
                     results.append(assistant_response)
 
-                    # Log sample generated texts for verification
+                    # Log generated text for each conversation
                     global_idx = i + j
-                    if global_idx < 3:  # Log first 3 generated responses
-                        preview = (
-                            assistant_response[:500] + "..."
-                            if len(assistant_response) > 500
-                            else assistant_response
-                        )
-                        logger.info(
-                            f"[Sample Generation {global_idx + 1}] Response preview:\n{preview}"
-                        )
+                    logger.info(
+                        f"[Generation {global_idx + 1}/{len(user_input)}] "
+                        f"Input tokens: {input_length} | Output tokens: {len(generated_ids)} | "
+                        f"Response:\n{assistant_response}"
+                    )
 
             logger.info(f"Completed generating all {len(user_input)} conversations")
             return results
