@@ -94,6 +94,20 @@ from validator.modules.llm_judge import LLMJudgeValidationModule, LLMJudgeConfig
     help="Prompt template ID for evaluation",
 )
 @click.option(
+    "--eval-require",
+    default=3,
+    type=int,
+    show_default=True,
+    help="Number of evaluation tries per conversation (0 to skip LLM evaluation)",
+)
+@click.option(
+    "--gen-require",
+    default=1,
+    type=int,
+    show_default=True,
+    help="Number of generation tries per conversation",
+)
+@click.option(
     "--gen-batch-size",
     default=1,
     type=int,
@@ -118,6 +132,8 @@ def main(
     max_params: int,
     eval_model_list: str,
     prompt_id: int,
+    eval_require: int,
+    gen_require: int,
     gen_batch_size: int,
     eval_batch_size: int,
 ):
@@ -153,10 +169,11 @@ def main(
     module = LLMJudgeValidationModule(config=config)
 
     # Build eval_args matching Flock task format
+    # When --eval-with-llm is not set, force eval_require=0 to skip LLM evaluation
     eval_args = {
         "eval_model_list": eval_model_list.split(","),
-        "eval_require": 3 if eval_with_llm else 0,
-        "gen_require": 1,
+        "eval_require": eval_require if eval_with_llm else 0,
+        "gen_require": gen_require,
         "prompt_id": prompt_id,
     }
 
@@ -176,8 +193,13 @@ def main(
     logger.info(f"Base model:       {base_model_name}")
     logger.info(f"Base model path:  {base_model_path or '(download from HuggingFace)'}")
     logger.info(f"Is LoRA:          {is_lora}")
-    logger.info(f"Eval with LLM:    {eval_with_llm}")
     logger.info(f"Context length:   {context_length}")
+    logger.info(f"Max params:       {max_params}")
+    logger.info(f"Eval with LLM:    {eval_with_llm}")
+    logger.info(f"Eval models:      {eval_model_list}")
+    logger.info(f"Prompt ID:        {prompt_id}")
+    logger.info(f"Eval require:     {eval_args['eval_require']}")
+    logger.info(f"Gen require:      {gen_require}")
 
     try:
         metrics = module.validate(
