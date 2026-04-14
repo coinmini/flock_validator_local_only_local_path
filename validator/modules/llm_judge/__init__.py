@@ -961,6 +961,12 @@ class LLMJudgeValidationModule(BaseValidationModule):
                     response, model_name=selected_model
                 )
 
+                logger.info(
+                    f"[Conv {conv_idx}] Model: {selected_model} | Try: {try_num + 1}/{max_eval_try} | "
+                    f"Score: {parsed_result['score']} | Confidence: {parsed_result['confidence']} | "
+                    f"Reasoning: {parsed_result.get('reasoning', 'N/A')}"
+                )
+
                 conv_scores.append(parsed_result["score"])
                 if parsed_result["confidence"] is not None:
                     conv_confidences.append(parsed_result["confidence"])
@@ -968,6 +974,13 @@ class LLMJudgeValidationModule(BaseValidationModule):
                     conv_reasoning.append(
                         f"Conv{conv_idx}-Model{model_idx + 1}({selected_model})-Try{try_num + 1}: {parsed_result['reasoning']}"
                     )
+
+        avg_score = sum(conv_scores) / len(conv_scores) if conv_scores else 0
+        avg_conf = sum(conv_confidences) / len(conv_confidences) if conv_confidences else 0
+        logger.info(
+            f"[Conv {conv_idx} Summary] Avg Score: {avg_score:.2f} | Avg Confidence: {avg_conf:.2f} | "
+            f"Evals: {len(conv_scores)} ({len(available_eval_models)} models x {max_eval_try} tries)"
+        )
 
         return {
             "scores": conv_scores,
@@ -1109,10 +1122,19 @@ class LLMJudgeValidationModule(BaseValidationModule):
         )
         combined_reasoning = "\n\n".join(all_reasoning) if all_reasoning else None
 
+        # Log all reasoning
+        if all_reasoning:
+            logger.info("=== All Evaluation Reasoning ===")
+            for reasoning_line in all_reasoning:
+                logger.info(reasoning_line)
+            logger.info("=== End Reasoning ===")
+
         # Normalize the final score to (0, 1) range
         score_finally = self._normalize_score(raw_avg_score)
         logger.info(
-            f"Overall normalized score_finally (0-1 range): {score_finally:.4f}"
+            f"Raw weighted avg score: {raw_avg_score:.4f} | "
+            f"Normalized score (0-1): {score_finally:.4f} | "
+            f"Total weighted scores: {len(all_weighted_scores)}"
         )
         return LLMJudgeMetrics(score=score_finally)
 
