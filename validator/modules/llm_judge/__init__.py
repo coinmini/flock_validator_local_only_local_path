@@ -141,7 +141,7 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
     def _validate_param_count(self, max_params: int | None):
         """Check that total model parameters do not exceed the limit."""
-        if max_params is None:
+        if max_params is None or max_params <= 0:
             return
         total = sum(p.numel() for p in self.hf_model.parameters())
         if total > max_params:
@@ -209,8 +209,16 @@ class LLMJudgeValidationModule(BaseValidationModule):
             )
         self._validate_param_count(max_params)
 
-    def _load_local_model(self, local_path: str, max_params: int = None):
-        """Load a LoRA adapter model from a local directory."""
+    def _load_local_model(self, local_path: str, max_params: int = None, base_model_path: str = None):
+        """Load a LoRA adapter model from a local directory.
+
+        Args:
+            local_path: Path to the LoRA adapter directory.
+            max_params: Maximum allowed parameter count (None to skip check).
+            base_model_path: Optional local path to the base model snapshot.
+                If provided, loads the base model from this path instead of
+                downloading from HuggingFace.
+        """
         local_path = Path(local_path)
         adapter_config_path = local_path / "adapter_config.json"
         if not adapter_config_path.exists():
@@ -231,8 +239,10 @@ class LLMJudgeValidationModule(BaseValidationModule):
                 f"Base model '{base_model}' is not supported"
             )
 
+        # Use local base model path if provided, otherwise use HF model name
+        model_source = base_model_path if base_model_path else base_model
         logger.info(
-            f"Loading local LoRA adapter from '{local_path}', base model: '{base_model}'"
+            f"Loading local LoRA adapter from '{local_path}', base model: '{model_source}'"
         )
 
         compute_dtype = self._get_compute_dtype()
@@ -243,10 +253,10 @@ class LLMJudgeValidationModule(BaseValidationModule):
         )
 
         self.hf_tokenizer = AutoTokenizer.from_pretrained(
-            base_model, trust_remote_code=True, use_fast=True, padding_side="left"
+            model_source, trust_remote_code=True, use_fast=True, padding_side="left"
         )
         base_hf_model = AutoModelForCausalLM.from_pretrained(
-            base_model, **model_kwargs
+            model_source, **model_kwargs
         )
         hf_model = PeftModel.from_pretrained(
             base_hf_model,
@@ -967,12 +977,20 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
     def validate(self, data: LLMJudgeInputData, **kwargs) -> LLMJudgeMetrics:
         local_model_path = kwargs.get("local_model_path")
-        eval_file = download_file(data.validation_set_url)
+        local_base_model_path = kwargs.get("local_base_model_path")
+        local_validation_file = kwargs.get("local_validation_file")
+
+        # Use local validation file if provided, otherwise download from URL
+        if local_validation_file:
+            logger.info(f"Using local validation file: {local_validation_file}")
+            eval_file = local_validation_file
+        else:
+            eval_file = download_file(data.validation_set_url)
 
         try:
             if local_model_path:
                 logger.info(f"Using local model from: {local_model_path}")
-                self._load_local_model(local_model_path, data.max_params)
+                self._load_local_model(local_model_path, data.max_params, base_model_path=local_base_model_path)
             else:
                 self._load_model(data.hg_repo_id, data.revision, data.max_params)
         except InvalidModelParametersException as e:
@@ -990,10 +1008,16 @@ class LLMJudgeValidationModule(BaseValidationModule):
         )
 
         # Load evaluation arguments
-
         max_eval_try = data.eval_args.get(
             "eval_require", 3
         )  # Default max evaluation tries
+
+        # Skip LLM evaluation if eval_require is 0
+        if max_eval_try <= 0:
+            logger.info("LLM evaluation skipped (eval_require=0). Returning generation-only results.")
+            logger.info(f"Generated {len(all_conversations)} conversations successfully.")
+            return LLMJudgeMetrics(score=0.0)
+
         eval_batch_size = self.config.eval_batch_size
 
         # Calculate total evaluation calls
