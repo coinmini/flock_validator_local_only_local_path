@@ -940,7 +940,7 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
         # Log reference once per conversation (assistant response is same as generation output)
         logger.info(
-            f"[Conv {conv_idx} Reference] {reference or 'N/A'}"
+            f"[Conv {conv_idx} Reference]\n{reference or 'N/A'}"
         )
 
         conv_scores = []

@@ -68,19 +68,19 @@ def parse_log(log_path: str):
                     current_gen_idx = None
                     current_gen_lines = []
 
-        # Eval input entry (reference + assistant response, may span multiple lines)
+        # Eval input entry (reference, may span multiple lines - preserve formatting)
         eval_input_match = eval_input_pattern.search(line)
         if eval_input_match:
             conv_idx = int(eval_input_match.group(1))
-            input_line = line
+            input_lines = [line]
             i += 1
             while i < len(lines):
                 next_line = lines[i].rstrip('\n')
                 if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+', next_line):
                     break
-                input_line += ' ' + next_line.strip() if next_line.strip() else ''
+                input_lines.append(next_line)
                 i += 1
-            eval_inputs[conv_idx] = input_line
+            eval_inputs[conv_idx] = '\n'.join(input_lines)
             continue
 
         # Evaluation entry (may span multiple lines due to reasoning with newlines)
