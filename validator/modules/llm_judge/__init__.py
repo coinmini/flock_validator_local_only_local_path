@@ -553,11 +553,10 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
         selected_model, model_params = self._parse_model_name_to_params(eval_model)
 
-        # Patch: kimi-k2.5 instant requires temperature=0.6, kimi-k2.5-thinking requires temperature=1.
-        # kimi-k2.6 only allows temperature=1 (both instant and thinking variants).
-        if eval_model == "kimi-k2.5":
+        # Patch: kimi instant variants require temperature=0.6, thinking variants require temperature=1.
+        if eval_model in ("kimi-k2.5", "kimi-k2.6"):
             temperature = 0.6
-        elif eval_model in ("kimi-k2.5-thinking", "kimi-k2.6", "kimi-k2.6-thinking"):
+        elif eval_model in ("kimi-k2.5-thinking", "kimi-k2.6-thinking"):
             temperature = 1
 
         params = {
