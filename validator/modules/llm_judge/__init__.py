@@ -63,19 +63,36 @@ class LLMJudgeValidationModule(BaseValidationModule):
     input_data_schema = LLMJudgeInputData
     task_type = "llm_evaluation"
 
+    # Models whose APIs do not accept the "system" role
+    _NO_SYSTEM_ROLE_MODELS = {"minimax-m2.1"}
+    # Providers that don't support the seed parameter (matched as substring)
+    _NO_SEED_MODELS = {"gemini"}
+
     def __init__(self, config: LLMJudgeConfig, **kwargs):
         super().__init__(config, **kwargs)
         self.config = config
         self.client = None
+        self.model_clients: Dict[str, OpenAI] = {}
+        self.model_name_map: Dict[str, str] = {}
         self.available_models = []
         self.hf_model = None
         self.hf_tokenizer = None
 
-        # Initialize client and get available models
+        # Initialize clients (default FLock proxy + per-model direct) and get available models
         self._initialize_client()
+        self._initialize_model_clients()
         self._fetch_available_models()
 
     def _initialize_client(self):
+        """Initialize the default client (FLock platform proxy) from OPENAI_* env vars."""
+        base_url = os.getenv("OPENAI_BASE_URL")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not base_url or not api_key:
+            logger.warning(
+                "OPENAI_BASE_URL/OPENAI_API_KEY not set, skipping default client "
+                "(per-model clients from <PREFIX>_* env vars can still be used)"
+            )
+            return
         try:
             timeout = httpx.Timeout(
                 connect=10.0,  # 10s to establish connection
@@ -85,27 +102,137 @@ class LLMJudgeValidationModule(BaseValidationModule):
             )
 
             self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL"),
+                api_key=api_key,
+                base_url=base_url,
                 timeout=timeout,
             )
 
         except Exception as e:
             raise LLMJudgeException(
-                f"OPENAI_API_KEY and OPENAI_BASE_URL are not set in the environment variables: {e}"
+                f"Failed to initialize default OpenAI client: {e}"
             ) from e
 
+    def _create_openai_client(self, base_url: str, api_key: str) -> OpenAI:
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=120.0,
+            write=20.0,
+            pool=10.0,
+        )
+        return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+
+    def _initialize_model_clients(self):
+        """
+        Initialize per-model OpenAI clients from environment variables.
+
+        Env var pattern (prefix-based):
+            <PREFIX>_BASE_URL=https://api.example.com/v1
+            <PREFIX>_API_KEY=sk-xxx
+            <PREFIX>_MODELS=model-a,model-b
+            <PREFIX>_MODEL_MAP=model-a:actual-api-name  (optional)
+        """
+        model_env_prefixes = set()
+        for key in os.environ:
+            if key.endswith("_MODELS") and key != "MODELS":
+                prefix = key[: -len("_MODELS")]
+                model_env_prefixes.add(prefix)
+
+        for prefix in sorted(model_env_prefixes):
+            base_url = os.getenv(f"{prefix}_BASE_URL")
+            api_key = os.getenv(f"{prefix}_API_KEY")
+            models_str = os.getenv(f"{prefix}_MODELS", "")
+
+            if not base_url or not api_key:
+                logger.warning(f"Skipping {prefix}: missing {prefix}_BASE_URL or {prefix}_API_KEY")
+                continue
+
+            models = [m.strip() for m in models_str.split(",") if m.strip()]
+            if not models:
+                continue
+
+            model_map_str = os.getenv(f"{prefix}_MODEL_MAP", "")
+            if model_map_str:
+                for mapping in model_map_str.split(","):
+                    mapping = mapping.strip()
+                    if ":" in mapping:
+                        local_name, api_name = mapping.split(":", 1)
+                        self.model_name_map[local_name.strip()] = api_name.strip()
+                        logger.info(f"Model name mapping: '{local_name.strip()}' -> '{api_name.strip()}'")
+
+            try:
+                client = self._create_openai_client(base_url, api_key)
+                for model_name in models:
+                    self.model_clients[model_name] = client
+                    logger.info(f"Registered model '{model_name}' -> {base_url} (prefix: {prefix})")
+            except Exception as e:
+                logger.error(f"Failed to create client for {prefix}: {e}")
+
+    def _get_client_for_model(self, model_name: str) -> OpenAI:
+        if model_name in self.model_clients:
+            return self.model_clients[model_name]
+        if self.client is not None:
+            return self.client
+        raise LLMJudgeException(
+            f"No API client available for model '{model_name}'. "
+            f"Set {model_name.upper().replace('-', '_')}_BASE_URL / _API_KEY / _MODELS in .env, "
+            f"or set the default OPENAI_BASE_URL / OPENAI_API_KEY."
+        )
+
+    def _adapt_messages_for_model(self, model_name: str, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Adapt messages for models that don't support the 'system' role."""
+        if model_name not in self._NO_SYSTEM_ROLE_MODELS:
+            return messages
+
+        system_parts = []
+        other_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_parts.append(msg["content"])
+            else:
+                other_messages.append(msg)
+
+        if not system_parts:
+            return messages
+
+        system_text = "\n".join(system_parts)
+        adapted = []
+        prepended = False
+        for msg in other_messages:
+            if msg["role"] == "user" and not prepended:
+                adapted.append({"role": "user", "content": f"[System instruction]: {system_text}\n\n{msg['content']}"})
+                prepended = True
+            else:
+                adapted.append(msg)
+
+        if not prepended:
+            adapted.insert(0, {"role": "user", "content": system_text})
+        return adapted
+
     def _fetch_available_models(self):
+        # Models registered via <PREFIX>_* env vars are always available
+        self.available_models = list(self.model_clients.keys())
+
+        if self.client is None:
+            if not self.available_models:
+                logger.warning(
+                    "No API clients configured; LLM evaluation will fail until "
+                    "OPENAI_* or <PREFIX>_* env vars are set"
+                )
+            return
+
         try:
             models_response = self.client.models.list()
-            self.available_models = [model.id for model in models_response.data]
+            for model in models_response.data:
+                if model.id not in self.available_models:
+                    self.available_models.append(model.id)
 
         except Exception as e:
             # Fallback to common models if API call fails
             logger.error(
                 f"Warning: Failed to fetch models from API ({e}), using fallback models"
             )
-            self.available_models = ["gpt-4o"]
+            if not self.available_models:
+                self.available_models = ["gpt-4o"]
 
     def _download_lora_config(self, repo_id: str, revision: str) -> bool:
         try:
@@ -553,18 +680,31 @@ class LLMJudgeValidationModule(BaseValidationModule):
 
         selected_model, model_params = self._parse_model_name_to_params(eval_model)
 
-        # Patch: kimi instant variants require temperature=0.6, thinking variants require temperature=1.
-        if eval_model in ("kimi-k2.5", "kimi-k2.6"):
-            temperature = 0.6
-        elif eval_model in ("kimi-k2.5-thinking", "kimi-k2.6-thinking"):
-            temperature = 1
+        # Whether this model goes through a registered direct client (vs FLock proxy)
+        is_direct_client = (
+            eval_model in self.model_clients or selected_model in self.model_clients
+        )
+
+        # Patch: kimi temperature requirements differ by endpoint.
+        # Direct Moonshot API: only temperature=1 is allowed.
+        # FLock proxy: instant variants require 0.6, thinking variants require 1.
+        if eval_model in ("kimi-k2.5", "kimi-k2.6", "kimi-k2.5-thinking", "kimi-k2.6-thinking"):
+            if is_direct_client or eval_model.endswith("-thinking"):
+                temperature = 1
+            else:
+                temperature = 0.6
+
+        api_model_name = self.model_name_map.get(selected_model, selected_model)
+        adapted_messages = self._adapt_messages_for_model(eval_model, messages)
 
         params = {
-            "model": selected_model,
-            "messages": messages,
+            "model": api_model_name,
+            "messages": adapted_messages,
             "temperature": temperature,
-            "seed": random.randint(0, 10000),
         }
+        # Some providers (e.g. Gemini) don't support the seed parameter
+        if not any(prefix in eval_model.lower() for prefix in self._NO_SEED_MODELS):
+            params["seed"] = random.randint(0, 10000)
         params.update(model_params)
 
         def log_retry(retry_state):
@@ -580,7 +720,9 @@ class LLMJudgeValidationModule(BaseValidationModule):
             reraise=True,
         )
         def _make_api_call():
-            completion = self.client.chat.completions.create(**params)
+            lookup_name = eval_model if eval_model in self.model_clients else selected_model
+            client = self._get_client_for_model(lookup_name)
+            completion = client.chat.completions.create(**params)
             return completion.choices[0].message.content
 
         try:
@@ -1147,6 +1289,18 @@ class LLMJudgeValidationModule(BaseValidationModule):
             except Exception:
                 pass
         self.client = None
+
+        # Close per-model clients (several model names may share one client)
+        closed = set()
+        for model_name, client in self.model_clients.items():
+            client_id = id(client)
+            if client_id not in closed and hasattr(client, "http_client"):
+                try:
+                    client.http_client.close()
+                except Exception:
+                    pass
+                closed.add(client_id)
+        self.model_clients.clear()
 
         # Clean up HuggingFace model resources
         if self.hf_model is not None:
